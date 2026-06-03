@@ -1,7 +1,7 @@
 import type { JobFilters } from '../types'
 
 const STATUSES = ['all', 'new', 'saved', 'applied', 'dismissed']
-const SOURCES  = ['remoteok', 'wwr', 'wellfound', 'ycjobs', 'arc', 'builtin']
+const SOURCES  = ['remoteok', 'remotive', 'himalayas', 'wwr', 'wellfound', 'ycjobs', 'arc', 'builtin']
 
 interface Props {
   filters: JobFilters

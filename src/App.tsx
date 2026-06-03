@@ -15,6 +15,7 @@ export default function App() {
   const [lastFetched, setLastFetched] = useState<Date | null>(null)
   const [filters, setFilters] = useState<JobFilters>(DEFAULT_FILTERS)
   const [selected, setSelected] = useState<JobListing | null>(null)
+  const [collapsed, setCollapsed] = useState(false)
 
   const fetchJobs = useCallback(async () => {
     setLoading(true)
@@ -81,13 +82,17 @@ export default function App() {
         loading={loading}
         lastFetched={lastFetched}
         total={jobs.length}
+        collapsed={collapsed}
+        onToggleCollapse={() => setCollapsed(c => !c)}
       />
 
-      <div className="cards stagger-children">
-        <StatCards stats={stats} />
-      </div>
+      {!collapsed && (
+        <div className="cards stagger-children">
+          <StatCards stats={stats} />
+        </div>
+      )}
 
-      <FilterBar filters={filters} onChange={setFilters} />
+      {!collapsed && <FilterBar filters={filters} onChange={setFilters} />}
 
       <JobTable
         jobs={filteredJobs}

@@ -360,6 +360,8 @@ tbody tr:hover td {
 .source-ycjobs    { background: rgba(249,115,22,0.14); color: #fb923c; border-color: rgba(249,115,22,0.3); }
 .source-arc       { background: rgba(59,130,246,0.14); color: #60a5fa; border-color: rgba(59,130,246,0.3); }
 .source-builtin   { background: rgba(168,85,247,0.14); color: #c084fc; border-color: rgba(168,85,247,0.3); }
+.source-remotive  { background: rgba(236,72,153,0.14); color: #f472b6; border-color: rgba(236,72,153,0.3); }
+.source-himalayas { background: rgba(99,102,241,0.14); color: #a5b4fc; border-color: rgba(99,102,241,0.3); }
 
 .mono { font-family: 'JetBrains Mono', monospace; font-size: 13px; }
 .actions-cell { display: flex; gap: 2px; align-items: center; }
@@ -465,6 +467,24 @@ tbody tr:hover td {
   flex-shrink: 0;
 }
 .btn-link-ext { margin-left: auto; }
+
+/* ─── Mobile ─────────────────────────────────────────────────────── */
+@media (max-width: 640px) {
+  header { padding: 8px 12px; }
+  header h1 { font-size: 15px; }
+  .header-actions { gap: 4px; }
+  .btn { padding: 6px 8px; font-size: 12px; gap: 4px; }
+  .btn-label { display: none; }  /* icon only on mobile */
+  .cards { padding: 8px 12px; gap: 8px; }
+  .card { padding: 8px 10px; min-width: 80px; }
+  .card .val { font-size: 18px; }
+  .card .lbl { font-size: 11px; }
+  .filter-bar { padding: 8px 12px; }
+  .tab-btn { padding: 5px 10px; font-size: 12px; }
+  .table-wrap { padding: 0 8px 12px; }
+  td, th { padding: 8px 8px; font-size: 13px; }
+  .drawer { width: 100vw; }
+}
 
 /* ─── Scrollbar global ────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 6px; }

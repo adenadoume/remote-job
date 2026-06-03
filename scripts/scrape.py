@@ -22,22 +22,40 @@ FIRECRAWL_KEY = os.environ.get('FIRECRAWL_API_KEY', '')
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-KEYWORDS = [
-    'python', 'fastapi', 'backend', 'api', 'ai', 'ml', 'llm',
-    'data engineer', 'analytics engineer', 'mlops', 'agent', 'integration engineer',
+# Specific tech keywords — title OR tags must contain at least one
+TECH_KEYWORDS = [
+    'python', 'fastapi', 'backend', 'llm', 'mlops', 'ml engineer',
+    'data engineer', 'analytics engineer', 'agent', 'integration engineer',
+    'software engineer', 'backend engineer', 'ai engineer', 'ml ops',
+    'machine learning', 'data pipeline', 'devops', 'platform engineer',
 ]
+# Broad keywords only valid in title, not loose context
+BROAD_KEYWORDS = ['developer', 'engineer', 'architect']
 
 HEADERS = {'User-Agent': 'Mozilla/5.0 (compatible; JobCrawler/1.0)'}
 
 
+def title_matches(title: str) -> bool:
+    """Title must contain a specific tech keyword or broad + tech-adjacent word."""
+    t = title.lower()
+    if any(k in t for k in TECH_KEYWORDS):
+        return True
+    # broad keyword + tech-adjacent
+    if any(k in t for k in BROAD_KEYWORDS):
+        return any(w in t for w in ['python', 'data', 'ai', 'ml', 'backend', 'api', 'llm', 'cloud', 'platform'])
+    return False
+
+
 def matches(text: str) -> bool:
+    """Used for tags/description — requires specific keyword."""
     t = text.lower()
-    return any(k in t for k in KEYWORDS)
+    return any(k in t for k in TECH_KEYWORDS)
 
 
 def extract_tags(text: str) -> list[str]:
     t = text.lower()
-    return [k for k in KEYWORDS if k in t]
+    all_kw = TECH_KEYWORDS + ['api', 'ai', 'ml', 'docker', 'postgresql', 'react', 'typescript', 'go', 'rust', 'kubernetes']
+    return [k for k in all_kw if k in t]
 
 
 def upsert(job: dict) -> bool:
@@ -153,7 +171,7 @@ def scrape_wellfound() -> list[dict]:
     for m in pattern.finditer(md):
         title, link = m.group(1).strip(), m.group(2).strip()
         ctx = md[m.start(): m.start() + 300]
-        if not matches(f'{title} {ctx}'):
+        if not title_matches(title):
             continue
         lines = ctx.split('\n')
         company = next(
@@ -185,7 +203,7 @@ def scrape_ycjobs() -> list[dict]:
         title = m.group(1).strip()
         path  = m.group(2)
         ctx   = '\n'.join(lines[max(0, i-2): i+4])
-        if not matches(f'{title} {ctx}'):
+        if not title_matches(title):
             continue
         company = lines[i - 1].lstrip('#').strip() if i > 0 else 'YC Company'
         company = re.sub(r'[*_\[\]]', '', company).strip() or 'YC Company'
@@ -210,7 +228,7 @@ def scrape_arc() -> list[dict]:
     for m in pattern.finditer(md):
         title, link = m.group(1).strip(), m.group(2).strip()
         ctx = md[m.start(): m.start() + 250]
-        if not matches(f'{title} {ctx}'):
+        if not title_matches(title):
             continue
         ctx_lines = ctx.split('\n')
         company = next(
@@ -228,10 +246,78 @@ def scrape_arc() -> list[dict]:
     return results
 
 
+# ── Remotive ─────────────────────────────────────────────────────────────
+def scrape_remotive() -> list[dict]:
+    results = []
+    try:
+        r = requests.get(
+            'https://remotive.com/api/remote-jobs',
+            params={'category': 'software-dev', 'limit': 100},
+            headers=HEADERS, timeout=15
+        )
+        r.raise_for_status()
+        for job in r.json().get('jobs', []):
+            title = job.get('title', '')
+            if not title_matches(title):
+                continue
+            sal = job.get('salary', '') or ''
+            sal_min = None
+            m = re.search(r'\$(\d[\d,]+)', sal)
+            if m:
+                sal_min = int(m.group(1).replace(',', ''))
+                if sal_min < 60_000:
+                    continue
+            tags = [t.lower() for t in job.get('tags', [])]
+            results.append({
+                'url':        job.get('url', ''),
+                'title':      title,
+                'company':    job.get('company_name', 'Unknown'),
+                'source':     'remotive',
+                'salary_min': sal_min,
+                'salary_max': None,
+                'tags':       tags or extract_tags(title),
+                'posted_at':  job.get('publication_date'),
+            })
+    except Exception as e:
+        print(f'  [remotive] ERROR: {e}', file=sys.stderr)
+    return results
+
+
+# ── Himalayas ─────────────────────────────────────────────────────────────
+def scrape_himalayas() -> list[dict]:
+    results = []
+    try:
+        r = requests.get(
+            'https://himalayas.app/jobs/api',
+            params={'q': 'python backend', 'remote': 'true', 'limit': 50},
+            headers=HEADERS, timeout=15
+        )
+        r.raise_for_status()
+        for job in r.json().get('jobs', []):
+            title = job.get('title', '')
+            if not title_matches(title):
+                continue
+            results.append({
+                'url':        job.get('applicationLink') or job.get('url', ''),
+                'title':      title,
+                'company':    job.get('companyName', 'Unknown'),
+                'source':     'himalayas',
+                'salary_min': job.get('salaryMin'),
+                'salary_max': job.get('salaryMax'),
+                'tags':       extract_tags(title + ' ' + ' '.join(job.get('tags', []))),
+                'posted_at':  job.get('createdAt'),
+            })
+    except Exception as e:
+        print(f'  [himalayas] ERROR: {e}', file=sys.stderr)
+    return results
+
+
 # ── Main ─────────────────────────────────────────────────────────────────
 def main():
     scrapers = [
         ('RemoteOK',  scrape_remoteok),
+        ('Remotive',  scrape_remotive),
+        ('Himalayas', scrape_himalayas),
         ('WWR',       scrape_wwr),
         ('Wellfound', scrape_wellfound),
         ('YC Jobs',   scrape_ycjobs),
