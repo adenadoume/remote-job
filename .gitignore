@@ -2,6 +2,10 @@ node_modules/
 dist/
 .env
 .env.local
+*.env
 scripts/.env
 *.log
 .DS_Store
+api-deepseek.md
+*-keys.md
+*-secrets.md
