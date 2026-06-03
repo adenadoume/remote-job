@@ -2,12 +2,12 @@ import { useState, useEffect, useMemo, useCallback } from 'react'
 import { supabase } from './lib/supabase'
 import Header from './components/Header'
 import StatCards from './components/StatCards'
-import FilterBar from './components/FilterBar'
+import FilterBar, { PAID_SOURCES } from './components/FilterBar'
 import JobTable from './components/JobTable'
 import JobDrawer from './components/JobDrawer'
 import type { JobListing, JobFilters, Stats } from './types'
 
-const DEFAULT_FILTERS: JobFilters = { status: 'all', source: '', min_score: 0, search: '' }
+const DEFAULT_FILTERS: JobFilters = { status: 'all', source: '', min_score: 0, search: '', free_only: false }
 
 export default function App() {
   const [jobs, setJobs] = useState<JobListing[]>([])
@@ -47,6 +47,7 @@ export default function App() {
         j.company.toLowerCase().includes(q)
       )
     }
+    if (filters.free_only) r = r.filter(j => !PAID_SOURCES.has(j.source))
     return r
   }, [jobs, filters])
 

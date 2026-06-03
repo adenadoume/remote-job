@@ -22,6 +22,19 @@ FIRECRAWL_KEY = os.environ.get('FIRECRAWL_API_KEY', '')
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# ── Source config ─────────────────────────────────────────────────────────
+# enabled: False  → skipped entirely
+# cost:    None   → free  |  '$X/mo' → paid subscription required
+SOURCES = {
+    'remoteok':  {'enabled': False, 'cost': '$299/mo', 'note': 'Requires paid subscription for API access'},
+    'remotive':  {'enabled': True,  'cost': None},
+    'himalayas': {'enabled': True,  'cost': None},
+    'wwr':       {'enabled': True,  'cost': None},
+    'wellfound': {'enabled': True,  'cost': None,      'needs_firecrawl': True},
+    'ycjobs':    {'enabled': True,  'cost': None,      'needs_firecrawl': True},
+    'arc':       {'enabled': True,  'cost': None,      'needs_firecrawl': True},
+}
+
 # Specific tech keywords — title OR tags must contain at least one
 TECH_KEYWORDS = [
     'python', 'fastapi', 'backend', 'llm', 'mlops', 'ml engineer',
@@ -386,23 +399,31 @@ def scrape_himalayas() -> list[dict]:
 
 # ── Main ─────────────────────────────────────────────────────────────────
 def main():
-    scrapers = [
-        ('RemoteOK',  scrape_remoteok),
-        ('Remotive',  scrape_remotive),
-        ('Himalayas', scrape_himalayas),
-        ('WWR',       scrape_wwr),
-        ('Wellfound', scrape_wellfound),
-        ('YC Jobs',   scrape_ycjobs),
-        ('Arc.dev',   scrape_arc),
+    all_scrapers = [
+        ('remoteok',  'RemoteOK',  scrape_remoteok),
+        ('remotive',  'Remotive',  scrape_remotive),
+        ('himalayas', 'Himalayas', scrape_himalayas),
+        ('wwr',       'WWR',       scrape_wwr),
+        ('wellfound', 'Wellfound', scrape_wellfound),
+        ('ycjobs',    'YC Jobs',   scrape_ycjobs),
+        ('arc',       'Arc.dev',   scrape_arc),
     ]
 
     if not FIRECRAWL_KEY:
-        print('FIRECRAWL_API_KEY not set — Wellfound, YC, Arc will be skipped\n')
+        print('FIRECRAWL_API_KEY not set — Wellfound, YC, Arc skipped\n')
 
     total_scraped = 0
     total_inserted = 0
 
-    for name, fn in scrapers:
+    for key, name, fn in all_scrapers:
+        cfg = SOURCES.get(key, {})
+        if not cfg.get('enabled', True):
+            cost = cfg.get('cost', '')
+            note = cfg.get('note', 'disabled')
+            print(f'Skipping {name} — {note}' + (f' ({cost})' if cost else ''))
+            continue
+        if cfg.get('needs_firecrawl') and not FIRECRAWL_KEY:
+            continue
         print(f'Scraping {name}…', end=' ', flush=True)
         jobs = fn()
         inserted = sum(1 for j in jobs if upsert(j))

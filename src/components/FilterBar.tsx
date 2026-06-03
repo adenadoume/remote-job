@@ -1,7 +1,23 @@
 import type { JobFilters } from '../types'
 
 const STATUSES = ['all', 'new', 'saved', 'applied', 'dismissed']
-const SOURCES  = ['remoteok', 'remotive', 'himalayas', 'wwr', 'wellfound', 'ycjobs', 'arc', 'builtin']
+
+// source → subscription cost required to APPLY (null = free to apply)
+export const SOURCE_COST: Record<string, string | null> = {
+  remoteok:  '$299/mo',
+  remotive:  null,
+  himalayas: null,
+  wwr:       null,
+  wellfound: null,
+  ycjobs:    null,
+  arc:       null,
+  builtin:   null,
+  manual:    null,
+}
+
+export const PAID_SOURCES = new Set(Object.entries(SOURCE_COST).filter(([, v]) => v !== null).map(([k]) => k))
+
+const SOURCES = Object.keys(SOURCE_COST)
 
 interface Props {
   filters: JobFilters
@@ -27,8 +43,21 @@ export default function FilterBar({ filters, onChange }: Props) {
 
         <select value={filters.source} onChange={e => set('source', e.target.value)}>
           <option value="">All Sources</option>
-          {SOURCES.map(s => <option key={s} value={s}>{s}</option>)}
+          {SOURCES.map(s => (
+            <option key={s} value={s}>
+              {s}{SOURCE_COST[s] ? ` 💳` : ''}
+            </option>
+          ))}
         </select>
+
+        {/* Free-only toggle */}
+        <button
+          className={`tab-btn${filters.free_only ? ' active' : ''}`}
+          onClick={() => set('free_only', !filters.free_only)}
+          title="Hide job boards that require a paid subscription to apply"
+        >
+          {filters.free_only ? '✓ Free only' : 'Free only'}
+        </button>
 
         <label>
           Score ≥ {filters.min_score}

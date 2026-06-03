@@ -28,4 +28,5 @@ export interface JobFilters {
   source: string
   min_score: number
   search: string
+  free_only: boolean
 }
