@@ -26,7 +26,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # enabled: False  → skipped entirely
 # cost:    None   → free  |  '$X/mo' → paid subscription required
 SOURCES = {
-    'remoteok':  {'enabled': False, 'cost': '$299/mo', 'note': 'Requires paid subscription for API access'},
+    'remoteok':  {'enabled': True,  'cost': '$17.95/mo'},
     'remotive':  {'enabled': True,  'cost': None},
     'himalayas': {'enabled': True,  'cost': None},
     'wwr':       {'enabled': True,  'cost': None},

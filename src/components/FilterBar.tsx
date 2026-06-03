@@ -4,7 +4,7 @@ const STATUSES = ['all', 'new', 'saved', 'applied', 'dismissed']
 
 // source → subscription cost required to APPLY (null = free to apply)
 export const SOURCE_COST: Record<string, string | null> = {
-  remoteok:  '$299/mo',
+  remoteok:  '$17.95/mo',
   remotive:  null,
   himalayas: null,
   wwr:       null,
@@ -16,6 +16,14 @@ export const SOURCE_COST: Record<string, string | null> = {
 }
 
 export const PAID_SOURCES = new Set(Object.entries(SOURCE_COST).filter(([, v]) => v !== null).map(([k]) => k))
+
+// Sum of all paid source monthly costs for display
+const PAID_COST = Object.values(SOURCE_COST)
+  .filter((v): v is string => v !== null)
+  .map(v => parseFloat(v.replace('$', '')))
+  .reduce((a, b) => a + b, 0)
+  .toFixed(2)
+  .replace(/\.00$/, '') + '/mo'
 
 const SOURCES = Object.keys(SOURCE_COST)
 
@@ -50,13 +58,13 @@ export default function FilterBar({ filters, onChange }: Props) {
           ))}
         </select>
 
-        {/* Free-only toggle */}
+        {/* Free-only toggle — shows total monthly cost of paid sources */}
         <button
           className={`tab-btn${filters.free_only ? ' active' : ''}`}
           onClick={() => set('free_only', !filters.free_only)}
-          title="Hide job boards that require a paid subscription to apply"
+          title="Toggle paid job boards on/off"
         >
-          {filters.free_only ? '✓ Free only' : 'Free only'}
+          {filters.free_only ? '✓ Free only' : `Free only · ${PAID_COST}`}
         </button>
 
         <label>
