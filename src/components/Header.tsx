@@ -28,14 +28,16 @@ export default function Header({ onRefresh, loading, lastFetched, total, collaps
       const res = await fetch(`${API_BASE}/api/jobs/${endpoint}${params}`, { method: 'POST' })
       const data = await res.json()
       if (data.success) {
-        const out = data.output ? JSON.parse(data.output) : data
-        const msg = out.inserted != null
-          ? `✓ ${out.inserted} new listings from ${out.source}`
-          : (data.output?.split('\n').pop() ?? 'Done')
-        setFeedback(msg)
+        // add-url returns JSON in output; scrape/score return plain text
+        let msg = data.output?.split('\n').pop()?.trim() ?? 'Done'
+        try {
+          const parsed = JSON.parse(data.output ?? '')
+          if (parsed.inserted != null) msg = `✓ ${parsed.inserted} new from ${parsed.source}`
+        } catch { /* plain text output — use last line as-is */ }
+        setFeedback(`✓ ${msg}`)
         onRefresh()
       } else {
-        setFeedback(data.error ?? data.errors ?? 'Failed')
+        setFeedback(data.error ?? data.errors?.split('\n').pop() ?? 'Failed')
       }
     } catch {
       setFeedback('Network error')
