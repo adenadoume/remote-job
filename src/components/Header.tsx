@@ -12,22 +12,30 @@ interface Props {
 }
 
 export default function Header({ onRefresh, loading, lastFetched, total, collapsed, onToggleCollapse }: Props) {
-  const [scraping, setScraping] = useState(false)
-  const [scoring, setScoring] = useState(false)
-  const [feedback, setFeedback] = useState<string | null>(null)
+  const [scraping, setScraping]   = useState(false)
+  const [scoring, setScoring]     = useState(false)
+  const [adding, setAdding]       = useState(false)
+  const [addUrl, setAddUrl]       = useState('')
+  const [feedback, setFeedback]   = useState<string | null>(null)
 
-  async function trigger(endpoint: string, setLoading: (b: boolean) => void) {
+  const busy = loading || scraping || scoring || adding
+
+  async function trigger(endpoint: string, setLoading: (b: boolean) => void, body?: Record<string, string>) {
     setLoading(true)
     setFeedback(null)
     try {
-      const res = await fetch(`${API_BASE}/api/jobs/${endpoint}`, { method: 'POST' })
+      const params = body ? '?' + new URLSearchParams(body).toString() : ''
+      const res = await fetch(`${API_BASE}/api/jobs/${endpoint}${params}`, { method: 'POST' })
       const data = await res.json()
       if (data.success) {
-        const line = data.output?.split('\n').pop() ?? 'Done'
-        setFeedback(line)
+        const out = data.output ? JSON.parse(data.output) : data
+        const msg = out.inserted != null
+          ? `✓ ${out.inserted} new listings from ${out.source}`
+          : (data.output?.split('\n').pop() ?? 'Done')
+        setFeedback(msg)
         onRefresh()
       } else {
-        setFeedback(data.error ?? 'Failed')
+        setFeedback(data.error ?? data.errors ?? 'Failed')
       }
     } catch {
       setFeedback('Network error')
@@ -36,8 +44,15 @@ export default function Header({ onRefresh, loading, lastFetched, total, collaps
     }
   }
 
+  async function handleAddUrl() {
+    const url = addUrl.trim()
+    if (!url.startsWith('http')) { setFeedback('Enter a valid URL'); return }
+    await trigger('add-url', setAdding, { url })
+    setAddUrl('')
+  }
+
   return (
-    <header>
+    <header style={{ flexWrap: 'wrap', gap: 8 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
         <button
           className="btn-icon"
@@ -56,20 +71,42 @@ export default function Header({ onRefresh, loading, lastFetched, total, collaps
                 : 'Scored by DeepSeek · runs Mon–Sat 08:00 UTC'}
             </div>
           )}
-          {feedback && <div className="sub" style={{ color: '#4ade80' }}>{feedback}</div>}
+          {feedback && (
+            <div className="sub" style={{ color: feedback.startsWith('✓') ? '#4ade80' : '#f87171' }}>
+              {feedback}
+            </div>
+          )}
         </div>
       </div>
 
+      {/* Add URL row */}
+      <div className="header-add-url">
+        <input
+          className="search-input"
+          type="url"
+          placeholder="Paste job board URL to scrape…"
+          value={addUrl}
+          onChange={e => setAddUrl(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && !busy && handleAddUrl()}
+          style={{ minWidth: 240, flex: 1 }}
+          disabled={busy}
+        />
+        <button className="btn btn-primary" onClick={handleAddUrl} disabled={busy || !addUrl.trim()}>
+          {adding ? <span className="spinner" /> : '+'}
+          <span className="btn-label">Add</span>
+        </button>
+      </div>
+
       <div className="header-actions">
-        <button className="btn" onClick={onRefresh} disabled={loading || scraping || scoring}>
+        <button className="btn" onClick={onRefresh} disabled={busy}>
           {loading ? <span className="spinner" /> : '↻'}
           <span className="btn-label">Refresh</span>
         </button>
-        <button className="btn" onClick={() => trigger('scrape', setScraping)} disabled={scraping || loading || scoring}>
+        <button className="btn" onClick={() => trigger('scrape', setScraping)} disabled={busy}>
           {scraping ? <span className="spinner" /> : '⬇'}
           <span className="btn-label">Scrape</span>
         </button>
-        <button className="btn" onClick={() => trigger('score', setScoring)} disabled={scoring || loading || scraping}>
+        <button className="btn" onClick={() => trigger('score', setScoring)} disabled={busy}>
           {scoring ? <span className="spinner" /> : '★'}
           <span className="btn-label">Score</span>
         </button>
