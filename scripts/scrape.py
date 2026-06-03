@@ -58,6 +58,69 @@ def extract_tags(text: str) -> list[str]:
     return [k for k in all_kw if k in t]
 
 
+def extract_salary(text: str) -> tuple[int | None, int | None]:
+    """Parse salary from free text. Returns (min, max) in USD/year or (None, None)."""
+    if not text:
+        return None, None
+    # Normalise: remove commas, collapse whitespace
+    t = re.sub(r',', '', text)
+    t = re.sub(r'\s+', ' ', t)
+
+    def to_annual(val: int) -> int:
+        """Treat values < 1000 as k-shorthand, < 500 as hourly → annual."""
+        if val < 500:   return val * 2080   # hourly → annual
+        if val < 1000:  return val * 1000   # e.g. 120 → 120 000
+        return val
+
+    # Range patterns: $80k–$120k / $80000–$120000 / 80k-120k / USD 80k
+    range_pat = re.compile(
+        r'\$?(\d{1,3}(?:\.\d+)?)\s*[kK]?\s*[-–—to]+\s*\$?(\d{1,3}(?:\.\d+)?)\s*[kK]?'
+        r'(?:\s*/?\s*(?:yr|year|annual|pa))?',
+        re.IGNORECASE,
+    )
+    m = range_pat.search(t)
+    if m:
+        lo = float(m.group(1)); hi = float(m.group(2))
+        # detect k suffix in the original match
+        snippet = m.group(0).lower()
+        if 'k' in snippet:
+            if lo < 1000: lo *= 1000
+            if hi < 1000: hi *= 1000
+        lo, hi = int(to_annual(int(lo))), int(to_annual(int(hi)))
+        if 20_000 < lo < 1_000_000:
+            return min(lo, hi), max(lo, hi)
+
+    # Single value: $120k / $120,000 / USD 120k
+    single_pat = re.compile(
+        r'(?:USD|US\$|\$)\s*(\d{1,3}(?:\.\d+)?)\s*[kK]?'
+        r'(?:\s*/?\s*(?:yr|year|annual|pa))?',
+        re.IGNORECASE,
+    )
+    m = single_pat.search(t)
+    if m:
+        val = float(m.group(1))
+        snippet = m.group(0).lower()
+        if 'k' in snippet and val < 1000:
+            val *= 1000
+        val = int(to_annual(int(val)))
+        if 20_000 < val < 1_000_000:
+            return val, None
+
+    return None, None
+
+
+def is_truly_remote(context: str) -> bool:
+    """Return False if context explicitly says 'In office' or 'On-site'."""
+    t = context.lower()
+    if re.search(r'\bin[\s-]?office\b', t):
+        return False
+    if re.search(r'\bon[\s-]?site\b', t):
+        return False
+    if re.search(r'\bno remote\b', t):
+        return False
+    return True
+
+
 def upsert(job: dict) -> bool:
     """Insert only if URL not already present. Returns True if new row added."""
     url = (job.get('url') or '').strip()
@@ -89,6 +152,11 @@ def scrape_remoteok() -> list[dict]:
             if not matches(text):
                 continue
             sal_min = item.get('salary_min')
+            sal_max = item.get('salary_max')
+            # Fall back to description parsing if no structured salary
+            if not sal_min:
+                desc = item.get('description', '')
+                sal_min, sal_max = extract_salary(desc)
             if sal_min and int(sal_min) < 60_000:
                 continue
             results.append({
@@ -97,7 +165,7 @@ def scrape_remoteok() -> list[dict]:
                 'company':    item.get('company', 'Unknown'),
                 'source':     'remoteok',
                 'salary_min': int(sal_min) if sal_min else None,
-                'salary_max': int(item['salary_max']) if item.get('salary_max') else None,
+                'salary_max': int(sal_max) if sal_max else None,
                 'tags':       item.get('tags', []),
                 'posted_at':  item.get('date'),
             })
@@ -128,13 +196,14 @@ def scrape_wwr() -> list[dict]:
                 company, job_title = title.split(': ', 1)
             else:
                 company, job_title = 'Unknown', title
+            sal_min, sal_max = extract_salary(desc)
             results.append({
                 'url':        link,
                 'title':      job_title.strip(),
                 'company':    company.strip(),
                 'source':     'wwr',
-                'salary_min': None,
-                'salary_max': None,
+                'salary_min': sal_min,
+                'salary_max': sal_max,
                 'tags':       extract_tags(text),
                 'posted_at':  pub or None,
             })
@@ -170,18 +239,21 @@ def scrape_wellfound() -> list[dict]:
     pattern = re.compile(r'\[([^\]]+)\]\((https://wellfound\.com/jobs/[^)]+)\)')
     for m in pattern.finditer(md):
         title, link = m.group(1).strip(), m.group(2).strip()
-        ctx = md[m.start(): m.start() + 300]
+        ctx = md[m.start(): m.start() + 600]  # wider window for salary + remote policy
         if not title_matches(title):
+            continue
+        if not is_truly_remote(ctx):
             continue
         lines = ctx.split('\n')
         company = next(
             (re.sub(r'[*_#\[\]]', '', l).strip() for l in lines[1:4]
              if l.strip() and len(l.strip()) < 60), 'Unknown'
         )
+        sal_min, sal_max = extract_salary(ctx)
         results.append({
             'url': link, 'title': title, 'company': company,
             'source': 'wellfound',
-            'salary_min': None, 'salary_max': None,
+            'salary_min': sal_min, 'salary_max': sal_max,
             'tags': extract_tags(f'{title} {ctx}'),
             'posted_at': None,
         })
@@ -260,13 +332,13 @@ def scrape_remotive() -> list[dict]:
             title = job.get('title', '')
             if not title_matches(title):
                 continue
-            sal = job.get('salary', '') or ''
-            sal_min = None
-            m = re.search(r'\$(\d[\d,]+)', sal)
-            if m:
-                sal_min = int(m.group(1).replace(',', ''))
-                if sal_min < 60_000:
-                    continue
+            sal_str = job.get('salary', '') or ''
+            desc    = job.get('description', '') or ''
+            sal_min, sal_max = extract_salary(sal_str) if sal_str else (None, None)
+            if sal_min is None:
+                sal_min, sal_max = extract_salary(desc)
+            if sal_min and sal_min < 60_000:
+                continue
             tags = [t.lower() for t in job.get('tags', [])]
             results.append({
                 'url':        job.get('url', ''),
@@ -274,7 +346,7 @@ def scrape_remotive() -> list[dict]:
                 'company':    job.get('company_name', 'Unknown'),
                 'source':     'remotive',
                 'salary_min': sal_min,
-                'salary_max': None,
+                'salary_max': sal_max,
                 'tags':       tags or extract_tags(title),
                 'posted_at':  job.get('publication_date'),
             })
