@@ -38,13 +38,17 @@ HEADERS = {
     'Accept': 'text/html,application/xhtml+xml',
 }
 
-DUTH_BASE = 'https://career.duth.gr'
+DUTH_BASE  = 'https://career.duth.gr'
+CERTH_BASE = 'https://www.certh.gr'
 
 
 # ── Source routing ────────────────────────────────────────────────────────────
 
 def is_duth(url: str) -> bool:
     return 'career.duth.gr' in url
+
+def is_certh(url: str) -> bool:
+    return 'certh.gr' in url
 
 
 # ── Direct HTTP + BeautifulSoup (DUTH — plain HTML, no API cost) ─────────────
@@ -203,6 +207,95 @@ def scrape_duth_job_bs4(job_url: str) -> dict:
     return details
 
 
+# ── Direct HTTP + BeautifulSoup (CERTH — tile-based plain HTML) ──────────────
+
+def parse_certh_list_bs4(source_url: str) -> list[dict]:
+    """
+    Parse CERTH listing page: divs with class="tile_details"
+      tile_title > a[href]  → job URL + title (in <strong>) + employer + date
+      tile_description      → deadline in <strong>
+    """
+    from bs4 import NavigableString
+    soup, _ = fetch_soup(source_url)
+    if not soup:
+        return []
+
+    jobs = []
+    for tile in soup.find_all('div', class_='tile_details'):
+        title_div = tile.find('div', class_='tile_title')
+        if not title_div:
+            continue
+        a_tag = title_div.find('a', href=True)
+        if not a_tag or not a_tag['href'].endswith('.el.aspx'):
+            continue
+
+        job_url = CERTH_BASE + '/' + a_tag['href']
+
+        strong = a_tag.find('strong')
+        title  = strong.get_text(separator=' ', strip=True) if strong else a_tag.get_text(strip=True)
+
+        employer = ''
+        for node in a_tag.contents:
+            if isinstance(node, NavigableString) and '@' in str(node):
+                employer = str(node).strip().lstrip('@').strip()
+                break
+
+        date_span = a_tag.find('span')
+        posted_at = date_span.get_text(strip=True) if date_span else ''
+
+        desc_div = tile.find('div', class_='tile_description')
+        deadline = ''
+        if desc_div:
+            strong_dl = desc_div.find('strong')
+            if strong_dl:
+                deadline = strong_dl.get_text(strip=True)
+
+        jobs.append({
+            'url':           job_url,
+            'title':         title,
+            'employer':      employer,
+            'positions':     _positions_from_certh_title(title),
+            'specialty':     '',
+            'location':      'Θεσσαλονίκη',
+            'posted_at':     posted_at,
+            'deadline':      deadline,
+            'contract_type': _contract_type_from_title(title),
+            'requirements':  '',
+            'description':   '',
+            'pdf_urls':      [],
+            'source':        'certh',
+        })
+    return jobs
+
+
+def scrape_certh_job_bs4(job_url: str) -> dict:
+    """Scrape individual CERTH job subpage for PDF attachments and full employer name."""
+    soup, _ = fetch_soup(job_url)
+    if not soup:
+        return {}
+
+    details: dict = {}
+    content_div = soup.find('div', class_='InnerPageMainContent') or soup
+
+    pdf_urls = []
+    for a in content_div.find_all('a', href=True):
+        href = a['href']
+        if '.pdf' in href.lower() or href.startswith('dat/'):
+            full = (CERTH_BASE + '/' + href) if not href.startswith('http') else href
+            if full not in pdf_urls:
+                pdf_urls.append(full)
+    if pdf_urls:
+        details['pdf_urls'] = pdf_urls
+
+    for tag in content_div.find_all(['p', 'div', 'h2', 'h3']):
+        txt = tag.get_text(strip=True)
+        if 'Ινστιτούτο' in txt and len(txt) < 150:
+            details['employer'] = txt
+            break
+
+    return details
+
+
 # ── Firecrawl REST (non-DUTH JS-rendered pages) ───────────────────────────────
 
 def firecrawl_scrape(url: str) -> tuple[str, str]:
@@ -261,17 +354,27 @@ def _contract_type_from_title(title: str) -> str:
     t = title.lower()
     if 'ορισμένου χρόνου' in t:
         return 'Ορισμένου Χρόνου'
+    if 'ανάθεσης έργου' in t:
+        return 'Ανάθεση Έργου'
     if 'μίσθωσης έργου' in t:
         return 'Μίσθωσης Έργου'
     if 'αορίστου χρόνου' in t:
         return 'Αορίστου Χρόνου'
     if 'μετατάξ' in t:
         return 'Μετάταξη'
+    if 'υποτροφί' in t:
+        return 'Υποτροφία'
     return ''
 
 
 def _positions_from_title(title: str) -> str:
     m = re.match(r'^(\d+)\s+', title.strip())
+    return m.group(1) if m else '1'
+
+
+def _positions_from_certh_title(title: str) -> str:
+    """Extract position count from CERTH title: 'για μία (1) θέση' → '1'."""
+    m = re.search(r'\((\d+)\)', title)
     return m.group(1) if m else '1'
 
 
@@ -339,6 +442,8 @@ def scrape_source(source_url: str) -> list[dict]:
 
     if is_duth(source_url):
         jobs = parse_duth_list_bs4(source_url)
+    elif is_certh(source_url):
+        jobs = parse_certh_list_bs4(source_url)
     else:
         content, html = firecrawl_scrape(source_url)
         if not content:
@@ -355,9 +460,11 @@ def scrape_source(source_url: str) -> list[dict]:
         print(f'     [{i}/{len(new_jobs)}] {job["url"][-35:]}', end=' ', flush=True)
         if is_duth(job['url']):
             details = scrape_duth_job_bs4(job['url'])
+        elif is_certh(job['url']):
+            details = scrape_certh_job_bs4(job['url'])
         else:
             content, html = firecrawl_scrape(job['url'])
-            details = {}  # extend later if needed for non-DUTH detail pages
+            details = {}
         if details:
             for k, v in details.items():
                 if v:

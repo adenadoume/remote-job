@@ -7,6 +7,13 @@ import type { KepeasListing, KepeasFilters } from '../types'
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'https://agop-os.agop.pro'
 const STATUSES = ['all', 'new', 'uploaded', 'skipped']
 
+function sourceKeyFromUrl(url: string): string {
+  if (url.includes('duth'))    return 'duth'
+  if (url.includes('culture')) return 'culture'
+  if (url.includes('certh'))   return 'certh'
+  try { return new URL(url).hostname.replace(/^www\./, '').split('.')[0] } catch { return url }
+}
+
 interface Props {
   onSwitchMode?: () => void
 }
@@ -19,6 +26,12 @@ export default function KepeasPage({ onSwitchMode }: Props) {
   const [lastFetched, setLastFetched] = useState<Date | null>(null)
   const [filters, setFilters]   = useState<KepeasFilters>({ status: 'new', search: '' })
   const [showSources, setShowSources] = useState(false)
+  const [enabledSources, setEnabledSources] = useState<Set<string> | null>(null)
+
+  const fetchEnabledSources = useCallback(async () => {
+    const { data } = await supabase.from('kepea_sources').select('url').eq('enabled', true)
+    if (data) setEnabledSources(new Set(data.map(s => sourceKeyFromUrl(s.url))))
+  }, [])
 
   const fetchListings = useCallback(async () => {
     setLoading(true)
@@ -34,7 +47,10 @@ export default function KepeasPage({ onSwitchMode }: Props) {
     setLoading(false)
   }, [])
 
-  useEffect(() => { fetchListings() }, [fetchListings])
+  useEffect(() => {
+    fetchListings()
+    fetchEnabledSources()
+  }, [fetchListings, fetchEnabledSources])
 
   async function triggerScrape() {
     setScraping(true)
@@ -60,7 +76,12 @@ export default function KepeasPage({ onSwitchMode }: Props) {
     setListings(prev => prev.map(l => l.id === id ? { ...l, status } : l))
   }
 
+  function updateListing(id: string, fields: Partial<KepeasListing>) {
+    setListings(prev => prev.map(l => l.id === id ? { ...l, ...fields } : l))
+  }
+
   const filtered = listings.filter(l => {
+    if (enabledSources && !enabledSources.has(l.source ?? '')) return false
     if (filters.status !== 'all' && l.status !== filters.status) return false
     if (filters.search) {
       const q = filters.search.toLowerCase()
@@ -116,7 +137,9 @@ export default function KepeasPage({ onSwitchMode }: Props) {
       </div>
 
       {/* Sources manager */}
-      {showSources && <KepeasSources onClose={() => setShowSources(false)} />}
+      {showSources && (
+        <KepeasSources onClose={() => { setShowSources(false); fetchEnabledSources() }} />
+      )}
 
       {/* Filter bar */}
       <div className="kepea-filter-bar">
@@ -156,7 +179,7 @@ export default function KepeasPage({ onSwitchMode }: Props) {
         {!loading && filtered.length > 0 && (
           <div className="kepea-grid">
             {filtered.map(l => (
-              <KepeasCard key={l.id} listing={l} onStatusChange={updateStatus} />
+              <KepeasCard key={l.id} listing={l} onStatusChange={updateStatus} onUpdate={updateListing} />
             ))}
           </div>
         )}
