@@ -24,6 +24,8 @@ html, body {
   font-size: 15px;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+  max-width: 100vw;
 }
 
 #root { height: 100%; }
@@ -670,7 +672,7 @@ tbody tr:hover td {
   header h1 { font-size: 15px; }
   .header-actions { gap: 4px; }
   .btn { padding: 6px 8px; font-size: 12px; gap: 4px; }
-  .btn-label { display: none; }  /* icon only on mobile */
+  .btn-label { display: none; }
   .cards { padding: 8px 12px; gap: 8px; }
   .card { padding: 8px 10px; min-width: 80px; }
   .card .val { font-size: 18px; }
@@ -680,6 +682,43 @@ tbody tr:hover td {
   .table-wrap { padding: 0 8px 12px; }
   td, th { padding: 8px 8px; font-size: 13px; }
   .drawer { width: 100vw; }
+
+  /* ── KEPEA mobile ── */
+  .kepea-page { overflow-x: hidden; }
+
+  .kepea-header { padding: 10px 12px; gap: 6px; }
+  .kepea-header h1 { font-size: 15px; }
+  .kepea-header .sub { font-size: 11px; }
+  .kepea-header .header-actions { flex-wrap: wrap; gap: 4px; }
+
+  .kepea-filter-bar { padding: 8px 12px; gap: 6px; overflow-x: auto; flex-wrap: nowrap; }
+  .kepea-filter-group { flex-shrink: 0; padding-right: 8px; margin-right: 4px; }
+  .tab-btn { white-space: nowrap; }
+
+  .kepea-scroll { padding: 10px 12px; }
+
+  /* 1-column card grid — no horizontal overflow */
+  .kepea-grid { grid-template-columns: 1fr; gap: 10px; }
+
+  .kepea-card { padding: 12px; gap: 8px; }
+  .kepea-title { font-size: 13px; }
+  .kepea-field { padding: 5px 8px; }
+  .kepea-field-label { font-size: 10px; }
+  .kepea-field-value { font-size: 12px; }
+
+  .kepea-card-footer { flex-wrap: wrap; gap: 6px; }
+  .kepea-card-footer .btn { flex: 1 1 auto; font-size: 11px; justify-content: center; }
+
+  /* Sources panel — stack add-form vertically */
+  .kepea-sources { padding: 12px; margin: 0 12px; max-width: calc(100vw - 24px); }
+  .kepea-add-source { flex-wrap: wrap; }
+  .kepea-add-source input { width: 100% !important; min-width: 0; flex: none !important; }
+  .kepea-add-source .btn { width: 100%; justify-content: center; }
+
+  .kepea-source-row input.kepea-edit-input { width: 100% !important; }
+
+  .kepea-pdfs { flex-wrap: wrap; }
+  .kepea-link-row a { font-size: 12px; }
 }
 
 /* ─── Scrollbar global ────────────────────────────────────────────── */
