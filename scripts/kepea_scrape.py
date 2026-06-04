@@ -193,9 +193,10 @@ def scrape_duth_job_bs4(job_url: str) -> dict:
     if m:
         details['positions'] = m.group(1)
 
-    # Fallback PDF links from raw HTML
+    # Fallback PDF links from raw HTML — skip the generic DUTH study PDFs
     if not details.get('pdf_urls'):
-        pdfs = extract_pdf_links(html, job_url)
+        pdfs = [p for p in extract_pdf_links(html, job_url)
+                if 'meleti_aporofisis' not in p and 'meletes' not in p]
         if pdfs:
             details['pdf_urls'] = pdfs[:3]
 
