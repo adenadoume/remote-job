@@ -1,6 +1,6 @@
 # Remote Job + KEPEA — Full Handoff
 
-**Last updated:** 2026-06-04  
+**Last updated:** 2026-06-04 (Session 4)  
 **Status:** Both apps live. job.agop.pro (remote jobs) + kepea.agop.pro (Greek public-sector jobs)  
 **Repo:** github.com:adenadoume/remote-job  
 **Oracle VM alias:** oracle-softone (`/opt/jobs/scripts/`)  
@@ -204,7 +204,7 @@ First run: ~50 Firecrawl calls. Subsequent daily: only truly new jobs.
 
 ### Known gaps
 - **Culture Ministry** (culture.gov.gr) — 0 jobs extracted, different JS page structure. Needs Playwright or custom scraper.
-- **CERTH** — generic fallback sometimes picks up navigation links as false positives.
+- **CERTH** — now fully BS4, parsing 24 jobs. PDFs extracted from `ipanel` table (outside main content div).
 
 ---
 
@@ -437,6 +437,17 @@ The ministry page is JS-rendered (SharePoint). Options:
 | DUTH org/68 picks up europa.eu links | Non-DUTH rows with no details | Filter: skip if `url_in_db` and skip if no title keyword match |
 | Firecrawl ~50 calls/day for DUTH | API credit usage | Replace with requests+BS4 (see 11A) |
 
+### CERTH parser details (added Session 4)
+CERTH page structure: `<div class="tile_details">` per listing with:
+- `tile_title > a[href]` — title (in `<strong>`), employer (text node with `@`), date (`<span>`)
+- `tile_description > strong` — deadline
+- `more > a[href]` — subpage URL
+
+Each subpage (`E9C03943.el.aspx` style) is scraped for:
+- PDFs: `<a href="dat/XXXXXX/file.pdf">` in `<table class="ipanel">` (NOT inside InnerPageMainContent)
+
+Positions parsed via `\((\d+)\)` regex from title. No Firecrawl used for CERTH.
+
 ---
 
 ## 13. Session History
@@ -457,18 +468,32 @@ The ministry page is JS-rendered (SharePoint). Options:
 - Cleared 29 bad old records, re-scraped → **49 DUTH jobs with all fields correct**
 - Employer/positions/contract_type also extracted from title text regex as fallback
 
+### 2026-06-04 (Session 3 — BS4 swap for DUTH)
+- Replaced Firecrawl with `requests + BeautifulSoup` for ALL DUTH sources
+- `fetch_soup()` helper, `parse_duth_list_bs4()`, `scrape_duth_job_bs4()` — targets Drupal CSS classes
+- Added `beautifulsoup4>=4.12.0` + `lxml>=5.0.0` to requirements.txt
+- Cleared old DUTH data, re-ran: 60 jobs in 63s, 0 Firecrawl credits for DUTH
+
+### 2026-06-04 (Session 4 — CERTH BS4, source filtering, inline edit)
+- **CERTH BS4 parser**: `parse_certh_list_bs4()` reads `tile_details` divs (title, employer, deadline, positions), `scrape_certh_job_bs4()` fetches subpages for PDFs (in `ipanel` table). 24 jobs parsed, correct fields.
+- **Source filtering in frontend**: `KepeasPage` now loads enabled sources from `kepea_sources` and filters listings to only show rows from enabled sources. Toggle a source off in ⚙ Πηγές → its cards disappear immediately.
+- **Inline field editing (UI training)**: ✏ button on each card opens edit mode — all fields become inputs/textareas. Save writes to Supabase and updates local state. Allows correcting wrong scraped data.
+- Added `kepea-card-editing` amber border style + `kepea-edit-fields` CSS.
+
 ---
 
 ## 14. What Is NOT Done Yet
 
-- [ ] Replace Firecrawl with requests+BS4 for DUTH (see 11A)
+- [x] Replace Firecrawl with requests+BS4 for DUTH ← done Session 3
+- [x] CERTH BS4 parser (tile-based, subpage PDFs) ← done Session 4
+- [x] Source filtering (Πηγές toggle hides cards) ← done Session 4
+- [x] Inline field editing / UI correction ← done Session 4
 - [ ] HTML export button in KepeasPage.tsx (see 11C)
 - [ ] Email report after daily scrape (see 11C)
 - [ ] Playwright auto-submit to KEPEA admin (see 11D) — needs credentials
-- [ ] Culture Ministry parser (see 11E)
+- [ ] Culture Ministry parser (see 11E) — JS-rendered, needs Playwright
 - [ ] Configurable source framework for new sites (see 11B)
 - [ ] Auth/login gate (low priority — single user, private URL)
-- [ ] Filter out CERTH navigation links + europa.eu false positives (minor)
 
 ---
 
@@ -485,4 +510,7 @@ The ministry page is JS-rendered (SharePoint). Options:
 | 2026-06-04 | 7 | kepea.agop.pro = same Vercel project, hostname-detected mode switch |
 | 2026-06-04 | 8 | DUTH scraper: 2-step (list parse → individual job pages) |
 | 2026-06-04 | 9 | ROADMAP: Playwright KEPEA auto-submit planned (needs credentials) |
-| 2026-06-04 | 10 | ROADMAP: Replace Firecrawl with BS4 for plain-HTML DUTH pages |
+| 2026-06-04 | 10 | DUTH: replace Firecrawl with BS4 — done Session 3 |
+| 2026-06-04 | 11 | CERTH: BS4 tile parser — no Firecrawl needed (plain HTML) |
+| 2026-06-04 | 12 | Source filtering: kepea_sources.enabled controls card visibility |
+| 2026-06-04 | 13 | Inline edit mode on KepeasCard = UI-based scraper correction |
