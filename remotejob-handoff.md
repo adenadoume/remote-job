@@ -1,7 +1,7 @@
 # Remote Job Crawler — Full Handoff
 
 **Last updated:** 2026-06-04  
-**Status:** Live at job.agop.pro + kepea.agop.pro — KEPEA scraper running on VM
+**Status:** Live at job.agop.pro + kepea.agop.pro — KEPEA scraper fully working, 49 DUTH jobs with all fields
 
 ---
 
@@ -278,6 +278,23 @@ create policy "anon insert" on kepea_sources for insert with check (true);
 
 ### Scraper note
 Uses direct HTTP POST to `https://api.firecrawl.dev/v1/scrape` (not the Python SDK) because the VM's `firecrawl-py` version rejected the `params` kwarg.
+
+### Scraping strategy (2-step)
+1. Fetch each list page → parse `| Καταληκτική Ημερομηνία | [Τίτλος](node_url) |` table → get individual job URLs + deadline
+2. For each NEW job: scrape `career.duth.gr/portal/?q=node/XXXXXX` → extract all fields:
+   - `posted_at` from "Ημερομηνία:" line
+   - `deadline` from "Καταληκτική ημερομηνία:" or "Περίοδος Υποβολής" range
+   - `contract_type` from "Προσωπικό:" taxonomy
+   - `specialty` from "Επιστήμες:" taxonomy  
+   - `requirements` from "Επίπεδο Εκπαίδευσης:" taxonomy
+   - `location` from "Γεωγραφική Περιοχή:" taxonomy
+   - `description` from main paragraph
+   - `pdf_urls` from "[Προκήρυξη](url)" link (employer's actual announcement)
+   - `employer` + `positions` + `contract_type` also extracted from title regex
+
+Subsequent daily runs are fast — only NEW jobs (not already in DB) get individual page scraping.
+
+**Known gaps**: Culture Ministry (0 jobs — different page structure, needs custom parser). CERTH sometimes picks up navigation links as false positives — minor, no impact on DUTH data.
 
 ---
 
