@@ -51,6 +51,7 @@ export interface KepeasSource {
 
 export interface KepeasFilters {
   status: string
+  source: string
   search: string
 }
 

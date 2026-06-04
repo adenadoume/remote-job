@@ -3,14 +3,15 @@
 Scrape Greek job boards for KEPEA listings and store in Supabase.
 
 Scraping strategy:
-  DUTH (career.duth.gr)  — plain HTML → requests + BeautifulSoup (FREE, no API)
-  Other sources          → Firecrawl REST API (for JS-rendered pages)
+  DUTH  (career.duth.gr)  — plain HTML → requests + BS4 (free)
+  CERTH (certh.gr)        — plain HTML → requests + BS4 tile parser (free)
+  Other / new sources     → requests + BS4 (or Firecrawl for JS) → DeepSeek AI extraction
 
-  Per source:
-    1. Fetch list page → parse 2-col table (deadline | [title → node URL])
-    2. For each NEW job (not already in DB) → fetch individual job page
-       for full fields: description, dates, contract type, location, PDF link
-    3. Upsert to kepea_listings
+  DeepSeek flow for unknown sources:
+    1. Fetch list page text
+    2. DeepSeek extracts all job dicts + needs_subpage flag
+    3. For new jobs with needs_subpage=True, fetch subpage → DeepSeek extracts full fields
+    4. Upsert to kepea_listings
 
 Run daily: 15 08 * * 1-6 cd /opt/jobs/scripts && python3 kepea_scrape.py
 """
@@ -30,7 +31,8 @@ from bs4 import BeautifulSoup
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 
 supabase: Client = create_client(os.environ['SUPABASE_URL'], os.environ['SUPABASE_SERVICE_ROLE_KEY'])
-FIRECRAWL_KEY   = os.environ.get('FIRECRAWL_API_KEY', '')
+FIRECRAWL_KEY  = os.environ.get('FIRECRAWL_API_KEY', '')
+DEEPSEEK_KEY   = os.environ.get('DEEPSEEK_API_KEY', '')
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36',
@@ -389,37 +391,146 @@ def _employer_from_title(title: str) -> str:
     return _clean(m.group(1)) if m else ''
 
 
-# ── Generic Firecrawl fallback (non-DUTH) ────────────────────────────────────
+# ── DeepSeek AI extraction (unknown / new sources) ───────────────────────────
 
-def parse_generic(content: str, html: str, source_url: str) -> list[dict]:
-    """Extract job-like markdown links from Firecrawl markdown output."""
-    jobs = []
-    pdf_links = extract_pdf_links(html, source_url)
-    link_pat = re.compile(r'\[([^\]]{5,120})\]\((https?://[^)]+)\)')
-    seen = set()
-    for m in link_pat.finditer(content):
-        text, link = m.group(1).strip(), m.group(2).strip()
-        if not re.search(r'θέσ|εργασ|προκήρ|πρόσληψ|θέση|πρόσκληση', text, re.IGNORECASE):
-            continue
-        if link in seen:
-            continue
-        seen.add(link)
+_DS_LIST_SYSTEM = """\
+You are a Greek public-sector job board parser.
+Given page text, extract ALL job postings and return ONLY a valid JSON array — no markdown, no explanation.
+
+Each element must have these exact keys:
+  title         – full Greek job title (string)
+  employer      – organisation/institute name (string, "" if unknown)
+  positions     – number of open positions (string, default "1")
+  deadline      – application deadline (string, "" if not found)
+  contract_type – one of: Ορισμένου Χρόνου | Αορίστου Χρόνου | Ανάθεση Έργου | Μίσθωσης Έργου | Υποτροφία | ""
+  specialty     – required discipline / field (string, "" if unknown)
+  location      – city or region (string, "" if unknown)
+  url           – absolute URL of this job's own detail page (string, "" if no subpage)
+  needs_subpage – true if url is a separate detail page worth visiting, false otherwise
+  pdf_urls      – list of absolute PDF attachment URLs found on this listing ([] if none)
+
+Include ONLY actual job postings, NOT navigation links, menus, or unrelated content.\
+"""
+
+_DS_DETAIL_SYSTEM = """\
+Extract job details from this Greek public-sector job posting page.
+Return ONLY a JSON object (no markdown, no explanation) with these keys:
+  title, employer, positions, deadline, contract_type, specialty,
+  location, requirements, description
+Use empty string "" for any field not found. Keep description under 300 chars.\
+"""
+
+
+def _call_deepseek(system: str, user: str, max_tokens: int = 2000) -> str:
+    """Call DeepSeek chat API; returns raw text or '' on failure."""
+    if not DEEPSEEK_KEY:
+        return ''
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=DEEPSEEK_KEY, base_url='https://api.deepseek.com')
+        resp = client.chat.completions.create(
+            model='deepseek-chat',
+            temperature=0.0,
+            max_tokens=max_tokens,
+            messages=[
+                {'role': 'system', 'content': system},
+                {'role': 'user',   'content': user},
+            ],
+        )
+        raw = resp.choices[0].message.content.strip()
+        return re.sub(r'^```(?:json)?\n?', '', raw).rstrip('`').strip()
+    except Exception as e:
+        print(f'  [deepseek] API error: {e}', file=sys.stderr)
+        return ''
+
+
+def scrape_with_deepseek(source_url: str) -> list[dict]:
+    """
+    Fetch source_url (BS4 first, Firecrawl fallback) then use DeepSeek to
+    extract all job listings.  Returns list of job dicts with a temporary
+    '_needs_subpage' key that is popped before upsert.
+    """
+    # Fetch page text — try plain HTTP first (free), then Firecrawl
+    soup, html = fetch_soup(source_url)
+    if soup:
+        page_text = soup.get_text(separator='\n', strip=True)
+    else:
+        page_text, html = firecrawl_scrape(source_url)
+        if not page_text:
+            print('  → no content (neither requests nor Firecrawl)', file=sys.stderr)
+            return []
+
+    user_msg = f'Source URL: {source_url}\n\n{page_text[:8000]}'
+    raw = _call_deepseek(_DS_LIST_SYSTEM, user_msg, max_tokens=2500)
+    if not raw:
+        return []
+
+    try:
+        items = json.loads(raw)
+    except json.JSONDecodeError as e:
+        print(f'  [deepseek] JSON parse error: {e}\nRaw: {raw[:200]}', file=sys.stderr)
+        return []
+
+    source = _source_name(source_url)
+    jobs   = []
+    for item in items:
+        url = (item.get('url') or '').strip()
+        if url and not url.startswith('http'):
+            url = urljoin(source_url, url)
+        if not url:
+            url = source_url   # fallback — same page (no subpage)
         jobs.append({
-            'url':           link,
-            'title':         _clean(text),
-            'employer':      '',
-            'positions':     _positions_from_title(text),
-            'specialty':     '',
-            'location':      '',
-            'posted_at':     '',
-            'deadline':      '',
-            'contract_type': _contract_type_from_title(text),
-            'requirements':  '',
-            'description':   '',
-            'pdf_urls':      pdf_links[:3],
-            'source':        _source_name(source_url),
+            'url':            url,
+            'title':          (item.get('title') or '').strip(),
+            'employer':       (item.get('employer') or '').strip(),
+            'positions':      str(item.get('positions') or '1'),
+            'specialty':      (item.get('specialty') or '').strip(),
+            'location':       (item.get('location') or '').strip(),
+            'posted_at':      '',
+            'deadline':       (item.get('deadline') or '').strip(),
+            'contract_type':  (item.get('contract_type') or '').strip(),
+            'requirements':   '',
+            'description':    '',
+            'pdf_urls':       [u for u in (item.get('pdf_urls') or []) if u],
+            'source':         source,
+            '_needs_subpage': bool(item.get('needs_subpage')),
         })
+
+    print(f'  [deepseek] extracted {len(jobs)} jobs')
     return jobs
+
+
+def deepseek_job_details(job_url: str) -> dict:
+    """
+    Fetch a job's detail page and use DeepSeek to extract full fields.
+    Falls back to BS4 text → Firecrawl if needed.
+    """
+    soup, html = fetch_soup(job_url)
+    if soup:
+        page_text  = soup.get_text(separator='\n', strip=True)[:6000]
+        html_source = html
+    else:
+        page_text, html_source = firecrawl_scrape(job_url)
+        page_text = page_text[:6000]
+        if not page_text:
+            return {}
+
+    raw = _call_deepseek(_DS_DETAIL_SYSTEM, page_text, max_tokens=800)
+    if not raw:
+        return {}
+
+    try:
+        details = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+
+    # Supplement with PDF links found in raw HTML
+    if html_source and not details.get('pdf_urls'):
+        pdfs = extract_pdf_links(html_source, job_url)
+        if pdfs:
+            details['pdf_urls'] = pdfs[:3]
+
+    return {k: v for k, v in details.items() if v}
 
 
 # ── Upsert ────────────────────────────────────────────────────────────────────
@@ -451,11 +562,7 @@ def scrape_source(source_url: str) -> list[dict]:
     elif is_certh(source_url):
         jobs = parse_certh_list_bs4(source_url)
     else:
-        content, html = firecrawl_scrape(source_url)
-        if not content:
-            print('  → no content')
-            return []
-        jobs = parse_generic(content, html, source_url)
+        jobs = scrape_with_deepseek(source_url)
 
     print(f'  → {len(jobs)} jobs on list page')
 
@@ -463,13 +570,15 @@ def scrape_source(source_url: str) -> list[dict]:
     print(f'  → {len(new_jobs)} new (fetching detail pages)')
 
     for i, job in enumerate(new_jobs, 1):
-        print(f'     [{i}/{len(new_jobs)}] {job["url"][-35:]}', end=' ', flush=True)
+        needs_sub = job.pop('_needs_subpage', True)
+        print(f'     [{i}/{len(new_jobs)}] {job["url"][-40:]}', end=' ', flush=True)
         if is_duth(job['url']):
             details = scrape_duth_job_bs4(job['url'])
         elif is_certh(job['url']):
             details = scrape_certh_job_bs4(job['url'])
+        elif needs_sub:
+            details = deepseek_job_details(job['url'])
         else:
-            content, html = firecrawl_scrape(job['url'])
             details = {}
         if details:
             for k, v in details.items():
@@ -477,8 +586,8 @@ def scrape_source(source_url: str) -> list[dict]:
                     job[k] = v
             print('✓')
         else:
-            print('(no details)')
-        time.sleep(0.3)
+            print('(inline)')
+        time.sleep(0.4)
 
     return new_jobs
 

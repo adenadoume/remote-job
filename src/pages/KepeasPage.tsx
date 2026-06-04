@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { supabase } from '../lib/supabase'
 import KepeasCard from '../components/KepeasCard'
 import KepeasSources from '../components/KepeasSources'
@@ -6,13 +6,6 @@ import type { KepeasListing, KepeasFilters } from '../types'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'https://agop-os.agop.pro'
 const STATUSES = ['all', 'new', 'uploaded', 'skipped']
-
-function sourceKeyFromUrl(url: string): string {
-  if (url.includes('duth'))    return 'duth'
-  if (url.includes('culture')) return 'culture'
-  if (url.includes('certh'))   return 'certh'
-  try { return new URL(url).hostname.replace(/^www\./, '').split('.')[0] } catch { return url }
-}
 
 interface Props {
   onSwitchMode?: () => void
@@ -24,14 +17,8 @@ export default function KepeasPage({ onSwitchMode }: Props) {
   const [scraping, setScraping] = useState(false)
   const [feedback, setFeedback] = useState<string | null>(null)
   const [lastFetched, setLastFetched] = useState<Date | null>(null)
-  const [filters, setFilters]   = useState<KepeasFilters>({ status: 'new', search: '' })
+  const [filters, setFilters]   = useState<KepeasFilters>({ status: 'new', source: 'all', search: '' })
   const [showSources, setShowSources] = useState(false)
-  const [enabledSources, setEnabledSources] = useState<Set<string> | null>(null)
-
-  const fetchEnabledSources = useCallback(async () => {
-    const { data } = await supabase.from('kepea_sources').select('url').eq('enabled', true)
-    if (data) setEnabledSources(new Set(data.map(s => sourceKeyFromUrl(s.url))))
-  }, [])
 
   const fetchListings = useCallback(async () => {
     setLoading(true)
@@ -47,10 +34,13 @@ export default function KepeasPage({ onSwitchMode }: Props) {
     setLoading(false)
   }, [])
 
-  useEffect(() => {
-    fetchListings()
-    fetchEnabledSources()
-  }, [fetchListings, fetchEnabledSources])
+  useEffect(() => { fetchListings() }, [fetchListings])
+
+  // Derive unique source names from loaded listings
+  const availableSources = useMemo(() => {
+    const s = new Set(listings.map(l => l.source ?? '').filter(Boolean))
+    return Array.from(s).sort()
+  }, [listings])
 
   async function triggerScrape() {
     setScraping(true)
@@ -81,7 +71,7 @@ export default function KepeasPage({ onSwitchMode }: Props) {
   }
 
   const filtered = listings.filter(l => {
-    if (enabledSources && !enabledSources.has(l.source ?? '')) return false
+    if (filters.source !== 'all' && l.source !== filters.source) return false
     if (filters.status !== 'all' && l.status !== filters.status) return false
     if (filters.search) {
       const q = filters.search.toLowerCase()
@@ -95,10 +85,10 @@ export default function KepeasPage({ onSwitchMode }: Props) {
   })
 
   const counts = {
-    all:      listings.length,
-    new:      listings.filter(l => l.status === 'new').length,
-    uploaded: listings.filter(l => l.status === 'uploaded').length,
-    skipped:  listings.filter(l => l.status === 'skipped').length,
+    all:      listings.filter(l => filters.source === 'all' || l.source === filters.source).length,
+    new:      listings.filter(l => (filters.source === 'all' || l.source === filters.source) && l.status === 'new').length,
+    uploaded: listings.filter(l => (filters.source === 'all' || l.source === filters.source) && l.status === 'uploaded').length,
+    skipped:  listings.filter(l => (filters.source === 'all' || l.source === filters.source) && l.status === 'skipped').length,
   }
 
   return (
@@ -137,12 +127,26 @@ export default function KepeasPage({ onSwitchMode }: Props) {
       </div>
 
       {/* Sources manager */}
-      {showSources && (
-        <KepeasSources onClose={() => { setShowSources(false); fetchEnabledSources() }} />
-      )}
+      {showSources && <KepeasSources onClose={() => setShowSources(false)} />}
 
       {/* Filter bar */}
       <div className="kepea-filter-bar">
+        {/* Source filter */}
+        {availableSources.length > 1 && (
+          <div className="kepea-filter-group">
+            {['all', ...availableSources].map(src => (
+              <button
+                key={src}
+                className={`tab-btn tab-btn-source${filters.source === src ? ' active' : ''}`}
+                onClick={() => setFilters(f => ({ ...f, source: src }))}
+              >
+                {src === 'all' ? 'Πηγές: Όλες' : src.toUpperCase()}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Status filter */}
         {STATUSES.map(s => (
           <button
             key={s}
