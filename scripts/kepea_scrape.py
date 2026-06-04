@@ -269,16 +269,20 @@ def parse_certh_list_bs4(source_url: str) -> list[dict]:
 
 
 def scrape_certh_job_bs4(job_url: str) -> dict:
-    """Scrape individual CERTH job subpage for PDF attachments and full employer name."""
+    """Scrape individual CERTH job subpage for PDF attachments and full employer name.
+
+    PDFs live in a separate <table class="ipanel"> outside InnerPageMainContent,
+    so we search the whole page.
+    """
     soup, _ = fetch_soup(job_url)
     if not soup:
         return {}
 
     details: dict = {}
-    content_div = soup.find('div', class_='InnerPageMainContent') or soup
 
+    # PDF links are in ipanel tables — search whole page
     pdf_urls = []
-    for a in content_div.find_all('a', href=True):
+    for a in soup.find_all('a', href=True):
         href = a['href']
         if '.pdf' in href.lower() or href.startswith('dat/'):
             full = (CERTH_BASE + '/' + href) if not href.startswith('http') else href
@@ -287,7 +291,9 @@ def scrape_certh_job_bs4(job_url: str) -> dict:
     if pdf_urls:
         details['pdf_urls'] = pdf_urls
 
-    for tag in content_div.find_all(['p', 'div', 'h2', 'h3']):
+    # Full employer from InnerPageMainContent
+    content_div = soup.find('div', class_='InnerPageMainContent') or soup
+    for tag in content_div.find_all(['p', 'div', 'h1', 'h2', 'h3']):
         txt = tag.get_text(strip=True)
         if 'Ινστιτούτο' in txt and len(txt) < 150:
             details['employer'] = txt
