@@ -23,6 +23,37 @@ export interface Stats {
   avgScore: string
 }
 
+export interface KepeasListing {
+  id: string
+  url: string
+  title: string | null
+  employer: string | null
+  positions: string | null
+  specialty: string | null
+  location: string | null
+  posted_at: string | null
+  deadline: string | null
+  contract_type: string | null
+  requirements: string | null
+  description: string | null
+  pdf_urls: string[] | null
+  source: string | null
+  scraped_at: string
+  status: 'new' | 'uploaded' | 'skipped'
+}
+
+export interface KepeasSource {
+  id: string
+  url: string
+  label: string
+  enabled: boolean
+}
+
+export interface KepeasFilters {
+  status: string
+  search: string
+}
+
 export interface JobFilters {
   status: string
   source: string

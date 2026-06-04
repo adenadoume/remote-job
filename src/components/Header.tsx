@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import type { ReactNode } from 'react'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'https://agop-os.agop.pro'
 
@@ -9,9 +10,10 @@ interface Props {
   total: number
   collapsed: boolean
   onToggleCollapse: () => void
+  extraAction?: React.ReactNode
 }
 
-export default function Header({ onRefresh, loading, lastFetched, total, collapsed, onToggleCollapse }: Props) {
+export default function Header({ onRefresh, loading, lastFetched, total, collapsed, onToggleCollapse, extraAction }: Props) {
   const [scraping, setScraping]   = useState(false)
   const [scoring, setScoring]     = useState(false)
   const [adding, setAdding]       = useState(false)
@@ -100,6 +102,7 @@ export default function Header({ onRefresh, loading, lastFetched, total, collaps
       </div>
 
       <div className="header-actions">
+        {extraAction}
         <button className="btn" onClick={onRefresh} disabled={busy}>
           {loading ? <span className="spinner" /> : '↻'}
           <span className="btn-label">Refresh</span>
