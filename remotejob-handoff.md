@@ -1,7 +1,7 @@
 # Remote Job Crawler — Full Handoff
 
-**Last updated:** 2026-06-03  
-**Status:** Scaffolded — all files written, Supabase schema needed, deploy pending
+**Last updated:** 2026-06-04  
+**Status:** Live at job.agop.pro + kepea.agop.pro — KEPEA scraper running on VM
 
 ---
 
@@ -216,21 +216,89 @@ Response format: `{"score": 0-10, "reason": "one sentence max 20 words"}`
 
 ---
 
-## What Is NOT Done Yet
+## KEPEA — Greek Job Scraper (added 2026-06-04)
 
-- Vercel deploy config (set root dir to `apps/remote-job/` in Vercel UI)
-- Supabase schema not yet created (run SQL above)
-- RLS policies not yet applied
-- Oracle VM scripts not yet deployed
-- `npm install` not yet run in this directory
-- Auth (no login gate — single user, assumed private URL for now)
+Separate route at **kepea.agop.pro** — girlfriend's tool to find/upload Greek public-sector job postings to the KEPEA admin system.
+
+### New files
+| File | Purpose |
+|------|---------|
+| `scripts/kepea_scrape.py` | Scrapes 5 Greek job boards via Firecrawl REST API (not SDK), upserts to `kepea_listings` |
+| `src/pages/KepeasPage.tsx` | Full KEPEA dashboard page |
+| `src/components/KepeasCard.tsx` | Card with click-to-copy per field + Copy All + status buttons |
+| `src/components/KepeasSources.tsx` | Source manager UI (add/enable/disable URLs) |
+
+### New Supabase tables
+Run this SQL if tables don't exist yet:
+
+```sql
+create table kepea_listings (
+  id            uuid primary key default gen_random_uuid(),
+  url           text unique not null,
+  title         text, employer text, positions text, specialty text,
+  location      text, posted_at text, deadline text, contract_type text,
+  requirements  text, description text, pdf_urls text[],
+  source        text, scraped_at timestamptz default now(),
+  status        text default 'new'
+);
+create index on kepea_listings (scraped_at desc);
+create index on kepea_listings (status);
+
+create table kepea_sources (
+  id       uuid primary key default gen_random_uuid(),
+  url      text unique not null,
+  label    text not null,
+  enabled  boolean default true,
+  added_at timestamptz default now()
+);
+
+insert into kepea_sources (url, label) values
+  ('https://career.duth.gr/portal/?q=publicsector/search',      'DUTH Δημόσιος Τομέας'),
+  ('https://career.duth.gr/portal/?q=organisation/search/68',   'DUTH Οργανισμός 68'),
+  ('https://career.duth.gr/portal/?q=organisation/search/67',   'DUTH Οργανισμός 67'),
+  ('https://www.culture.gov.gr/el/announcements/SitePages/proclamations.aspx?f=1', 'Υπουργείο Πολιτισμού'),
+  ('https://www.certh.gr/CCAC170B.el.aspx', 'CERTH');
+
+alter table kepea_listings enable row level security;
+create policy "anon read"   on kepea_listings for select using (true);
+create policy "anon update" on kepea_listings for update using (true) with check (true);
+alter table kepea_sources enable row level security;
+create policy "anon read"   on kepea_sources for select using (true);
+create policy "anon update" on kepea_sources for update using (true) with check (true);
+create policy "anon insert" on kepea_sources for insert with check (true);
+```
+
+### Cron on Oracle VM
+```
+15 08 * * 1-6 cd /opt/jobs/scripts && python3 kepea_scrape.py >> /var/log/kepea-scrape.log 2>&1
+```
+
+### Domain
+`kepea.agop.pro` — verified on Vercel, DNS via Cloudflare (CNAME). The app auto-switches to KEPEA mode when hostname = `kepea.agop.pro`.
+
+### Scraper note
+Uses direct HTTP POST to `https://api.firecrawl.dev/v1/scrape` (not the Python SDK) because the VM's `firecrawl-py` version rejected the `params` kwarg.
 
 ---
 
-## Decisions Made This Session
+## What Is NOT Done Yet
+
+- Auth (no login gate — single user, assumed private URL for now)
+- KEPEA: auto-detect duplicates already in the kepea.gr admin (needs login/Playwright)
+- Culture Ministry URL returns 0 jobs — page structure may need a custom parser
+
+---
+
+## Decisions Made
+
+### 2026-06-04
 
 1. **No Vercel Functions** — replaced by Oracle VM cron + direct Supabase client
 2. **DeepSeek V4** instead of Anthropic (cheaper for bulk scoring, OpenAI-compatible)
 3. **Firecrawl** instead of Playwright (JS boards, no size limits in serverless)
 4. **Fonts bumped** — 15px body, 14px table, 22px card values (up from 14/12-13/20)
 5. **No auth** for now — scope it later if needed
+
+### 2026-06-04
+6. **Firecrawl SDK replaced with direct HTTP** in `kepea_scrape.py` — SDK's `scrape()` rejected `params` kwarg on VM Python env
+7. **kepea.agop.pro** — same Vercel project as `job.agop.pro`, hostname detection switches mode automatically
