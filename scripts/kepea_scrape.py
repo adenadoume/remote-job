@@ -3,10 +3,14 @@
 Scrape Greek job boards for KEPEA listings and store in Supabase.
 
 Scraping strategy:
-  1. Fetch each list page → parse 2-col table (deadline | title+link)
-  2. For each NEW job (not already in DB) → scrape individual job page
-     for full details: description, dates, contract type, location, PDF link
-  3. Upsert to kepea_listings
+  DUTH (career.duth.gr)  — plain HTML → requests + BeautifulSoup (FREE, no API)
+  Other sources          → Firecrawl REST API (for JS-rendered pages)
+
+  Per source:
+    1. Fetch list page → parse 2-col table (deadline | [title → node URL])
+    2. For each NEW job (not already in DB) → fetch individual job page
+       for full fields: description, dates, contract type, location, PDF link
+    3. Upsert to kepea_listings
 
 Run daily: 15 08 * * 1-6 cd /opt/jobs/scripts && python3 kepea_scrape.py
 """
@@ -21,17 +25,190 @@ from datetime import datetime, timezone
 from urllib.parse import urljoin
 from dotenv import load_dotenv
 from supabase import create_client, Client
+from bs4 import BeautifulSoup
 
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 
 supabase: Client = create_client(os.environ['SUPABASE_URL'], os.environ['SUPABASE_SERVICE_ROLE_KEY'])
-FIRECRAWL_KEY = os.environ['FIRECRAWL_API_KEY']
+FIRECRAWL_KEY   = os.environ.get('FIRECRAWL_API_KEY', '')
+
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36',
+    'Accept-Language': 'el-GR,el;q=0.9,en;q=0.8',
+    'Accept': 'text/html,application/xhtml+xml',
+}
+
+DUTH_BASE = 'https://career.duth.gr'
 
 
-# ── Firecrawl HTTP wrapper ────────────────────────────────────────────────────
+# ── Source routing ────────────────────────────────────────────────────────────
+
+def is_duth(url: str) -> bool:
+    return 'career.duth.gr' in url
+
+
+# ── Direct HTTP + BeautifulSoup (DUTH — plain HTML, no API cost) ─────────────
+
+def fetch_soup(url: str) -> tuple[BeautifulSoup | None, str]:
+    """GET url → (BeautifulSoup, raw_html) or (None, '')."""
+    try:
+        r = http.get(url, headers=HEADERS, timeout=30)
+        r.raise_for_status()
+        r.encoding = 'utf-8'
+        return BeautifulSoup(r.text, 'lxml'), r.text
+    except Exception as e:
+        print(f'  [fetch] ERROR {url[:60]}: {e}', file=sys.stderr)
+        return None, ''
+
+
+def parse_duth_list_bs4(source_url: str) -> list[dict]:
+    """
+    Parse DUTH list page: 2-column HTML table
+      <td>dd/mm/yyyy</td> | <td><a href="/portal/?q=node/XXXXXX">Title</a></td>
+    """
+    soup, _ = fetch_soup(source_url)
+    if not soup:
+        return []
+
+    jobs = []
+    for table in soup.find_all('table'):
+        for tr in table.find_all('tr'):
+            cells = tr.find_all('td')
+            if len(cells) < 2:
+                continue
+            deadline = cells[0].get_text(strip=True)
+            if not re.match(r'\d{1,2}/\d{1,2}/\d{4}', deadline):
+                continue
+            a = cells[1].find('a')
+            if not a:
+                continue
+            title = a.get_text(strip=True)
+            href  = a.get('href', '')
+            if not href.startswith('http'):
+                href = urljoin(DUTH_BASE, href)
+            if not href or not title:
+                continue
+            jobs.append({
+                'url':           href,
+                'title':         title,
+                'employer':      _employer_from_title(title),
+                'positions':     _positions_from_title(title),
+                'specialty':     '',
+                'location':      '',
+                'posted_at':     '',
+                'deadline':      deadline,
+                'contract_type': _contract_type_from_title(title),
+                'requirements':  '',
+                'description':   '',
+                'pdf_urls':      [],
+                'source':        _source_name(source_url),
+            })
+    return jobs
+
+
+def scrape_duth_job_bs4(job_url: str) -> dict:
+    """
+    Scrape individual DUTH job page using exact Drupal CSS field classes.
+
+    Drupal field class → KEPEA field:
+      field-name-field-psp-deadline         → deadline
+      field-name-body                        → description
+      field-name-field-real-link             → pdf_urls (Προκήρυξη link)
+      field-name-field-psp-personnel         → contract_type
+      field-name-field-psp-sciencefields     → specialty
+      field-name-field-psp-educationlevel    → requirements
+      field-name-field-psp-geographicregion  → location
+    """
+    soup, html = fetch_soup(job_url)
+    if not soup:
+        return {}
+
+    details: dict = {}
+
+    def field_text(css_class: str) -> str:
+        div = soup.find('div', class_=css_class)
+        if not div:
+            return ''
+        items = div.find(class_='field-items') or div.find(class_='field-item')
+        if items:
+            a = items.find('a')
+            return (a.get_text(strip=True) if a else items.get_text(strip=True))
+        return div.get_text(strip=True)
+
+    def field_link(css_class: str) -> str:
+        div = soup.find('div', class_=css_class)
+        if not div:
+            return ''
+        a = div.find('a')
+        return a.get('href', '') if a else ''
+
+    # Deadline from dedicated field
+    dl = field_text('field-name-field-psp-deadline')
+    if dl:
+        details['deadline'] = dl
+
+    # Description from body field
+    desc = field_text('field-name-body')
+    if desc and len(desc) > 20:
+        details['description'] = desc[:800]
+
+    # Announcement / Προκήρυξη link
+    proc_href = field_link('field-name-field-real-link')
+    if proc_href:
+        if not proc_href.startswith('http'):
+            proc_href = urljoin(DUTH_BASE, proc_href)
+        details['pdf_urls'] = [proc_href]
+
+    # Taxonomy fields
+    contract = field_text('field-name-field-psp-personnel')
+    if contract:
+        details['contract_type'] = contract
+
+    specialty = field_text('field-name-field-psp-sciencefields')
+    if specialty:
+        details['specialty'] = specialty
+
+    edu = field_text('field-name-field-psp-educationlevel')
+    if edu:
+        details['requirements'] = edu
+
+    loc = field_text('field-name-field-psp-geographicregion')
+    if loc:
+        details['location'] = loc
+
+    # Publication date — from authored-by section (not a Drupal field div)
+    text = soup.get_text(separator='\n')
+    m = re.search(r'Ημερομηνία[:\s]*\n+([Α-Ωα-ω\w]+\s+\d{1,2},\s+\d{4})', text)
+    if m:
+        details['posted_at'] = m.group(1).strip()
+
+    # Application period range: "26/05/2026 - 04/06/2026"
+    m = re.search(r'(\d{2}/\d{2}/\d{4})\s*[-–]\s*(\d{2}/\d{2}/\d{4})', text)
+    if m:
+        details.setdefault('posted_at', m.group(1))
+        details.setdefault('deadline', m.group(2))
+
+    # Positions count from description: "πρόσληψη 3 ΠΕ"
+    m = re.search(r'πρόσληψη[ν]?\s+(\d+)\s+', text, re.IGNORECASE)
+    if m:
+        details['positions'] = m.group(1)
+
+    # Fallback PDF links from raw HTML
+    if not details.get('pdf_urls'):
+        pdfs = extract_pdf_links(html, job_url)
+        if pdfs:
+            details['pdf_urls'] = pdfs[:3]
+
+    return details
+
+
+# ── Firecrawl REST (non-DUTH JS-rendered pages) ───────────────────────────────
 
 def firecrawl_scrape(url: str) -> tuple[str, str]:
     """Returns (markdown, html) or ('', '') on error."""
+    if not FIRECRAWL_KEY:
+        print(f'  [firecrawl] No API key — skipping {url[:60]}', file=sys.stderr)
+        return '', ''
     try:
         r = http.post(
             'https://api.firecrawl.dev/v1/scrape',
@@ -47,7 +224,7 @@ def firecrawl_scrape(url: str) -> tuple[str, str]:
         return '', ''
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Shared helpers ────────────────────────────────────────────────────────────
 
 def extract_pdf_links(html: str, base_url: str) -> list[str]:
     pdfs = []
@@ -66,7 +243,6 @@ def extract_pdf_links(html: str, base_url: str) -> list[str]:
 
 
 def _clean(s: str) -> str:
-    """Remove markdown escape characters and strip."""
     return re.sub(r'\\([-\[\]|])', r'\1', s).strip()
 
 
@@ -82,9 +258,9 @@ def _source_name(url: str) -> str:
 
 def _contract_type_from_title(title: str) -> str:
     t = title.lower()
-    if 'ορισμένου χρόνου' in t or 'σοχ' in t:
+    if 'ορισμένου χρόνου' in t:
         return 'Ορισμένου Χρόνου'
-    if 'μίσθωσης έργου' in t or 'σμε' in t:
+    if 'μίσθωσης έργου' in t:
         return 'Μίσθωσης Έργου'
     if 'αορίστου χρόνου' in t:
         return 'Αορίστου Χρόνου'
@@ -99,59 +275,25 @@ def _positions_from_title(title: str) -> str:
 
 
 def _employer_from_title(title: str) -> str:
-    """Extract employer from Greek title patterns like 'Θέση στο/στην Δήμο X'."""
-    m = re.search(r'\bστ[οα-ωά-ώ]*\s+(.+?)(?:\s*$)', title, re.IGNORECASE)
-    if m:
-        return _clean(m.group(1))
-    return ''
+    m = re.search(r'\bστ[οα-ωά-ώ]*\s+(.+?)$', title, re.IGNORECASE)
+    return _clean(m.group(1)) if m else ''
 
 
-# ── List page parser ──────────────────────────────────────────────────────────
-
-def parse_duth_list(content: str, source_url: str) -> list[dict]:
-    """
-    Parse the DUTH 2-column table:
-      | Καταληκτική Ημερομηνία | Τίτλος |
-      | dd/mm/yyyy              | [title](url) |
-    """
-    jobs = []
-    # Match table rows: | date | [title](url) |
-    row_pat = re.compile(
-        r'\|\s*(\d{1,2}/\d{1,2}/\d{4})\s*\|\s*\[([^\]]+)\]\((https?://[^)]+)\)\s*\|'
-    )
-    for m in row_pat.finditer(content):
-        deadline  = m.group(1).strip()
-        title     = _clean(m.group(2))
-        job_url   = m.group(3).strip()
-
-        jobs.append({
-            'url':           job_url,
-            'title':         title,
-            'employer':      _employer_from_title(title),
-            'positions':     _positions_from_title(title),
-            'specialty':     '',
-            'location':      '',
-            'posted_at':     '',
-            'deadline':      deadline,
-            'contract_type': _contract_type_from_title(title),
-            'requirements':  '',
-            'description':   '',
-            'pdf_urls':      [],
-            'source':        _source_name(source_url),
-        })
-    return jobs
-
+# ── Generic Firecrawl fallback (non-DUTH) ────────────────────────────────────
 
 def parse_generic(content: str, html: str, source_url: str) -> list[dict]:
-    """Fallback: extract job-like markdown links for non-DUTH pages."""
+    """Extract job-like markdown links from Firecrawl markdown output."""
     jobs = []
     pdf_links = extract_pdf_links(html, source_url)
-
     link_pat = re.compile(r'\[([^\]]{5,120})\]\((https?://[^)]+)\)')
+    seen = set()
     for m in link_pat.finditer(content):
         text, link = m.group(1).strip(), m.group(2).strip()
         if not re.search(r'θέσ|εργασ|προκήρ|πρόσληψ|θέση|πρόσκληση', text, re.IGNORECASE):
             continue
+        if link in seen:
+            continue
+        seen.add(link)
         jobs.append({
             'url':           link,
             'title':         _clean(text),
@@ -168,86 +310,6 @@ def parse_generic(content: str, html: str, source_url: str) -> list[dict]:
             'source':        _source_name(source_url),
         })
     return jobs
-
-
-# ── Individual job page detail scraper ───────────────────────────────────────
-
-def scrape_job_details(job_url: str) -> dict:
-    """
-    Scrape individual DUTH job page and extract all available fields.
-    Returns a dict of fields to merge into the job record.
-    """
-    content, html = firecrawl_scrape(job_url)
-    if not content:
-        return {}
-
-    details: dict = {}
-
-    # Publication date: "Ημερομηνία:\n\nΜάιος 25, 2026 15:08"
-    m = re.search(r'Ημερομηνία:\s*\n+([Α-Ωα-ω\w]+\s+\d{1,2},\s+\d{4})', content)
-    if m:
-        details['posted_at'] = m.group(1).strip()
-
-    # Application period: "26/05/2026 - 04/06/2026"
-    m = re.search(r'(\d{2}/\d{2}/\d{4})\s*[-–]\s*(\d{2}/\d{2}/\d{4})', content)
-    if m:
-        details.setdefault('posted_at', m.group(1))
-        details.setdefault('deadline', m.group(2))
-
-    # Deadline (Greek long format): "Καταληκτική ημερομηνία:\n\nΠέμπτη, Ιούνιος 4, 2026"
-    m = re.search(r'Καταληκτική ημερομηνία:\s*\n+[Α-Ωα-ω]+,\s+([Α-Ωα-ω]+\s+\d{1,2},\s+\d{4})', content)
-    if m:
-        details['deadline'] = m.group(1).strip()
-
-    # Description: main paragraph (after author/date header lines)
-    # Find the paragraph that starts with "Ο Δήμος..." or "Η..." or similar
-    m = re.search(
-        r'Καταληκτική ημερομηνία:.{0,200}\n\n(.+?)(?:\n\nΠερίοδος|\n\nΕπικοινωνία|\n\n\[Προκήρυξη|\Z)',
-        content, re.DOTALL
-    )
-    if m:
-        desc = m.group(1).strip()
-        if len(desc) > 20:
-            details['description'] = desc[:800]
-
-    # Contract type: "Προσωπικό:\n\n[Ορισμένου Χρόνου](...)"
-    m = re.search(r'Προσωπικό:\s*\n+\[([^\]]+)\]', content)
-    if m:
-        details['contract_type'] = m.group(1).strip()
-
-    # Specialty (sciences field): "Επιστήμες:\n\n[Ανθρωπιστικές](...)"
-    m = re.search(r'Επιστήμες:\s*\n+\[([^\]]+)\]', content)
-    if m:
-        details['specialty'] = m.group(1).strip()
-
-    # Education level: "Επίπεδο Εκπαίδευσης:\n\n[Πανεπιστημιακής (ΠΕ)](...)"
-    m = re.search(r'Επίπεδο Εκπαίδευσης:\s*\n+\[([^\]]+)\]', content)
-    if m:
-        details['requirements'] = m.group(1).strip()
-
-    # Location: "Γεωγραφική Περιοχή:\n\n[Αττική](...)"
-    m = re.search(r'Γεωγραφική Περιοχή:\s*\n+\[([^\]]+)\]', content)
-    if m:
-        details['location'] = m.group(1).strip()
-
-    # Number of positions from description: "πρόσληψη 3" or "1 ΠΕ"
-    m_pos = re.search(r'πρόσληψη[ν]?\s+(\d+)\s+', content)
-    if m_pos:
-        details['positions'] = m_pos.group(1)
-
-    # Announcement / PDF link: "[Προκήρυξη](url)"
-    m = re.search(r'\[Προκήρυξη\]\((https?://[^)]+)\)', content)
-    if m:
-        proc_url = m.group(1).strip()
-        details['pdf_urls'] = [proc_url]
-
-    # Fallback: any PDF links in html
-    if not details.get('pdf_urls'):
-        pdfs = extract_pdf_links(html, job_url)
-        if pdfs:
-            details['pdf_urls'] = pdfs[:3]
-
-    return details
 
 
 # ── Upsert ────────────────────────────────────────────────────────────────────
@@ -272,33 +334,37 @@ def upsert(job: dict) -> bool:
 # ── Main scrape flow ──────────────────────────────────────────────────────────
 
 def scrape_source(source_url: str) -> list[dict]:
-    print(f'\n  List: {source_url[:70]}')
-    content, html = firecrawl_scrape(source_url)
-    if not content:
-        print('  → no content')
-        return []
+    print(f'\n  Source: {source_url[:70]}')
 
-    jobs = parse_duth_list(content, source_url)
-    if not jobs:
+    if is_duth(source_url):
+        jobs = parse_duth_list_bs4(source_url)
+    else:
+        content, html = firecrawl_scrape(source_url)
+        if not content:
+            print('  → no content')
+            return []
         jobs = parse_generic(content, html, source_url)
 
     print(f'  → {len(jobs)} jobs on list page')
 
-    # Only fetch detail pages for jobs not already in DB
     new_jobs = [j for j in jobs if not url_in_db(j['url'])]
-    print(f'  → {len(new_jobs)} new (will scrape detail pages)')
+    print(f'  → {len(new_jobs)} new (fetching detail pages)')
 
     for i, job in enumerate(new_jobs, 1):
-        print(f'     [{i}/{len(new_jobs)}] {job["url"][-30:]}', end=' ')
-        details = scrape_job_details(job['url'])
+        print(f'     [{i}/{len(new_jobs)}] {job["url"][-35:]}', end=' ', flush=True)
+        if is_duth(job['url']):
+            details = scrape_duth_job_bs4(job['url'])
+        else:
+            content, html = firecrawl_scrape(job['url'])
+            details = {}  # extend later if needed for non-DUTH detail pages
         if details:
             for k, v in details.items():
-                if v:  # only overwrite if detail page returned a value
+                if v:
                     job[k] = v
             print('✓')
         else:
             print('(no details)')
-        time.sleep(0.5)  # be polite to Firecrawl
+        time.sleep(0.3)
 
     return new_jobs
 
@@ -323,7 +389,7 @@ def main():
         print(f'  → inserted {inserted}')
 
     summary = {'scraped': total_scraped, 'inserted': total_inserted}
-    print(f'\nDone: {total_scraped} new scraped, {total_inserted} inserted')
+    print(f'\nDone: {total_scraped} new, {total_inserted} inserted')
     print(json.dumps(summary))
 
 
