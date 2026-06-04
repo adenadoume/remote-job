@@ -348,6 +348,58 @@ def _clean(s: str) -> str:
     return re.sub(r'\\([-\[\]|])', r'\1', s).strip()
 
 
+# ── Date normalisation ────────────────────────────────────────────────────────
+
+_GR_MONTHS_FULL = {
+    'Ιανουάρ': '01', 'Φεβρουάρ': '02', 'Μάρτ': '03', 'Απρίλ': '04',
+    'Μάι': '05',     'Μαΐ': '05',       'Ιούν': '06', 'Ιουν': '06',
+    'Ιούλ': '07',    'Ιουλ': '07',      'Αύγουσ': '08', 'Αυγουσ': '08',
+    'Σεπτέμβρ': '09','Σεπτεμβρ': '09',  'Οκτώβρ': '10', 'Οκτωβρ': '10',
+    'Νοέμβρ': '11',  'Νοεμβρ': '11',    'Δεκέμβρ': '12', 'Δεκεμβρ': '12',
+}
+_GR_MONTHS_SHORT = {
+    'Ιαν': '01', 'Φεβ': '02', 'Μαρ': '03', 'Απρ': '04',
+    'Μαϊ': '05', 'Μαί': '05', 'Ιουν': '06', 'Ιούν': '06',
+    'Ιουλ': '07', 'Ιούλ': '07', 'Αυγ': '08',
+    'Σεπ': '09', 'Οκτ': '10', 'Νοε': '11', 'Δεκ': '12',
+}
+
+
+def normalize_date(s: str) -> str:
+    """Normalise any Greek date string to DD/MM/YYYY."""
+    if not s:
+        return s
+    s = s.strip()
+
+    # Remove time suffix: "15-06-2026 και ώρα 10:00"
+    s = re.sub(r'\s+και\s+ώρα\s+\d{1,2}:\d{2}.*', '', s).strip()
+
+    # Remove leading day-of-week: "Πέμπτη, Ιούνιος 4, 2026"
+    s = re.sub(r'^[Α-Ω][α-ωά-ώ]+,\s*', '', s).strip()
+
+    # Full Greek month name first: "Ιούνιος 4, 2026" or "Μάιος 25, 2026"
+    for prefix, num in sorted(_GR_MONTHS_FULL.items(), key=lambda x: -len(x[0])):
+        m = re.match(rf'({re.escape(prefix)}[α-ωά-ώ]*)\s+(\d{{1,2}}),?\s+(\d{{4}})', s, re.I)
+        if m:
+            return f'{int(m.group(2)):02d}/{num}/{m.group(3)}'
+
+    # Short Greek month: "04 Ιουν 2026" or "29 Μαϊ 2026"
+    m = re.match(r'(\d{1,2})\s+([Α-Ωα-ωά-ώ]+)\s+(\d{4})', s)
+    if m:
+        day, month_gr, year = m.groups()
+        for prefix, num in sorted(_GR_MONTHS_SHORT.items(), key=lambda x: -len(x[0])):
+            if month_gr.startswith(prefix):
+                return f'{int(day):02d}/{num}/{year}'
+
+    # DD-MM-YYYY → DD/MM/YYYY
+    m = re.match(r'(\d{1,2})-(\d{2})-(\d{4})', s)
+    if m:
+        return f'{int(m.group(1)):02d}/{m.group(2)}/{m.group(3)}'
+
+    # Already DD/MM/YYYY or unrecognised
+    return s
+
+
 def _source_name(url: str) -> str:
     if 'duth' in url:
         return 'duth'
@@ -546,6 +598,8 @@ def upsert(job: dict) -> bool:
         return False
     if url_in_db(url):
         return False
+    job['deadline']   = normalize_date(job.get('deadline')  or '')
+    job['posted_at']  = normalize_date(job.get('posted_at') or '')
     job['scraped_at'] = datetime.now(timezone.utc).isoformat()
     job['status']     = 'new'
     supabase.table('kepea_listings').insert(job).execute()
