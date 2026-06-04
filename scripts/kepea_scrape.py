@@ -9,16 +9,16 @@ import os
 import re
 import sys
 import json
+import requests as http
 from datetime import datetime, timezone
 from urllib.parse import urljoin
 from dotenv import load_dotenv
 from supabase import create_client, Client
-from firecrawl import FirecrawlApp
 
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 
 supabase: Client = create_client(os.environ['SUPABASE_URL'], os.environ['SUPABASE_SERVICE_ROLE_KEY'])
-fc = FirecrawlApp(api_key=os.environ['FIRECRAWL_API_KEY'])
+FIRECRAWL_KEY = os.environ['FIRECRAWL_API_KEY']
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -127,24 +127,34 @@ def _source_name(url: str) -> str:
     return re.sub(r'^www\.', '', url.split('/')[2]).split('.')[0]
 
 
+def firecrawl_scrape(url: str) -> tuple[str, str]:
+    """Returns (markdown, html) or ('', '') on error."""
+    try:
+        r = http.post(
+            'https://api.firecrawl.dev/v1/scrape',
+            headers={'Authorization': f'Bearer {FIRECRAWL_KEY}', 'Content-Type': 'application/json'},
+            json={'url': url, 'formats': ['markdown', 'html']},
+            timeout=60,
+        )
+        r.raise_for_status()
+        data = r.json().get('data', {})
+        return data.get('markdown', ''), data.get('html', '')
+    except Exception as e:
+        print(f'  [firecrawl] ERROR: {e}', file=sys.stderr)
+        return '', ''
+
+
 def scrape_source(source_url: str) -> list[dict]:
     print(f'  Scraping {source_url[:60]}…', end=' ', flush=True)
-    try:
-        result = fc.scrape_url(source_url, params={'formats': ['markdown', 'html']})
-        if isinstance(result, dict):
-            content = result.get('markdown', '')
-            html    = result.get('html', '')
-        else:
-            content = getattr(result, 'markdown', '')
-            html    = getattr(result, 'html', '')
-        pdf_links = extract_pdf_links(html, source_url)
-        dates     = extract_dates(content)
-        jobs      = parse_tables(content, html, source_url, pdf_links, dates)
-        print(f'{len(jobs)} jobs')
-        return jobs
-    except Exception as e:
-        print(f'ERROR: {e}', file=sys.stderr)
+    content, html = firecrawl_scrape(source_url)
+    if not content:
+        print('no content')
         return []
+    pdf_links = extract_pdf_links(html, source_url)
+    dates     = extract_dates(content)
+    jobs      = parse_tables(content, html, source_url, pdf_links, dates)
+    print(f'{len(jobs)} jobs')
+    return jobs
 
 
 def upsert(job: dict) -> bool:
