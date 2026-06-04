@@ -396,6 +396,11 @@ def normalize_date(s: str) -> str:
     if m:
         return f'{int(m.group(1)):02d}/{m.group(2)}/{m.group(3)}'
 
+    # DD/MM/YYYY - HH:MM (DUTH format with time)
+    m = re.match(r'(\d{2}/\d{2}/\d{4})\s*-\s*\d{1,2}:\d{2}', s)
+    if m:
+        return m.group(1)
+
     # Already DD/MM/YYYY or unrecognised
     return s
 
